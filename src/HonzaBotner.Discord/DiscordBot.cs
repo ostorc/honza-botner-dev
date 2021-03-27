@@ -2,137 +2,164 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using DSharpPlus;
+using DSharpPlus.CommandsNext;
+using DSharpPlus.CommandsNext.Converters;
+using DSharpPlus.CommandsNext.Exceptions;
 using DSharpPlus.Entities;
 using DSharpPlus.EventArgs;
-using Microsoft.Extensions.DependencyInjection;
+using HonzaBotner.Discord.Managers;
 using Microsoft.Extensions.Logging;
-using HonzaBotner.Discord.Command;
-using HonzaBotner.Services.Contract;
-using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace HonzaBotner.Discord
 {
     internal class DiscordBot : IDiscordBot
     {
-        private readonly IServiceProvider _provider;
         private readonly DiscordWrapper _discordWrapper;
-        private readonly ILogger<DiscordBot> _logger;
-        private readonly CommandCollection _commands;
-        private readonly IAuthorizationService _authorizationService;
-        private readonly IUrlProvider _urlProvider;
+        private readonly EventHandler.EventHandler _eventHandler;
+        private readonly CommandConfigurator _configurator;
+        private readonly IVoiceManager _voiceManager;
 
         private DiscordClient Client => _discordWrapper.Client;
+        private CommandsNextExtension Commands => _discordWrapper.Commands;
 
-        public DiscordBot(IServiceProvider provider, DiscordWrapper discordWrapper, ILogger<DiscordBot> logger,
-            CommandCollection commands, IAuthorizationService authorizationService, IUrlProvider urlProvider)
+        public DiscordBot(DiscordWrapper discordWrapper, EventHandler.EventHandler eventHandler,
+            CommandConfigurator configurator, IVoiceManager voiceManager)
         {
-            _provider = provider;
             _discordWrapper = discordWrapper;
-            _logger = logger;
-            _commands = commands;
-            _authorizationService = authorizationService;
-            _urlProvider = urlProvider;
+            _eventHandler = eventHandler;
+            _configurator = configurator;
+            _voiceManager = voiceManager;
         }
 
         public async Task Run(CancellationToken cancellationToken)
         {
+            Client.Ready += Client_Ready;
+            Client.GuildAvailable += Client_GuildAvailable;
+            Client.ClientErrored += Client_ClientError;
+            Client.GuildDownloadCompleted += Client_GuildDownloadCompleted;
+
+            Commands.CommandExecuted += Commands_CommandExecuted;
+            Commands.CommandErrored += Commands_CommandErrored;
+
+            Client.MessageReactionAdded += Client_MessageReactionAdded;
+            Client.MessageReactionRemoved += Client_MessageReactionRemoved;
+            Client.VoiceStateUpdated += Client_VoiceStateUpdated;
+            Client.GuildMemberUpdated += Client_GuildMemberUpdated;
+            Client.ChannelCreated += Client_ChannelCreated;
+
+            _configurator.Config(Commands);
+            Commands.RegisterConverter(new EnumConverter<ActivityType>());
+
             await Client.ConnectAsync();
-
-            Client.MessageCreated += (args) => OnClientOnMessageCreated(args, cancellationToken);
-
-            Client.MessageReactionAdded += OnClientOnMessageReactionAdded;
-
             await Task.Delay(-1, cancellationToken);
         }
 
-        private bool GetCommand(MessageCreateEventArgs args, out IChatCommand commandProvider,
-            IServiceScope? scope = null)
+        private Task Client_Ready(DiscordClient sender, ReadyEventArgs e)
         {
-            var provider = scope == null ? _provider : scope.ServiceProvider;
-
-            string message = args.Message.Content.Substring(1).Split(" ")[0]!;
-            _logger.LogInformation(message);
-            var command = _commands.GetCommandType(message);
-            _logger.LogInformation(command?.ToString());
-
-            if (command == null)
-            {
-                _logger.LogWarning("Couldn't find command for message '{0}'", args.Message.Content);
-                commandProvider = null!;
-                return false;
-            }
-
-            var service = provider.GetService(command);
-            if (service is IChatCommand c)
-            {
-                commandProvider = c;
-                return true;
-            }
-
-            // Shouldn't happen at all
-            _logger.LogError("Couldn't find {0} in DI context", command.Name);
-            commandProvider = null!;
-            return false;
+            sender.Logger.LogInformation("Client is ready to process events");
+            return Task.CompletedTask;
         }
 
-        private async Task OnClientOnMessageCreated(MessageCreateEventArgs args, CancellationToken cancellationToken)
+        private Task Client_GuildAvailable(DiscordClient sender, GuildCreateEventArgs e)
         {
-            if (!args.Message.Content.StartsWith(";")) return;
+            sender.Logger.LogInformation("Guild available: {GuildName}", e.Guild.Name);
+            return Task.CompletedTask;
+        }
 
-            using var scope = _provider.CreateScope();
+        private async Task Client_GuildDownloadCompleted(DiscordClient sender, GuildDownloadCompletedEventArgs e)
+        {
+            sender.Logger.LogInformation("Guild download completed");
 
-            if (!GetCommand(args, out var commandProvider, scope)) return;
+            // Run managers' init processes.
+            await _voiceManager.DeleteAllUnusedVoiceChannelsAsync();
+        }
 
-            try
+        private Task Client_ClientError(DiscordClient sender, ClientErrorEventArgs e)
+        {
+            sender.Logger.LogError(e.Exception, "Exception occured");
+            return Task.CompletedTask;
+        }
+
+        private Task Commands_CommandExecuted(CommandsNextExtension sender, CommandExecutionEventArgs e)
+        {
+            e.Context.Client.Logger.LogInformation(
+                "{Username} successfully executed '{CommandName}'", e.Context.User.Username, e.Command.QualifiedName);
+            return Task.CompletedTask;
+        }
+
+        private async Task Commands_CommandErrored(CommandsNextExtension sender, CommandErrorEventArgs e)
+        {
+            switch (e.Exception)
             {
-                var commandResult = await commandProvider.ExecuteAsync(Client, args.Message, cancellationToken);
-
-                switch (commandResult)
+                case CommandNotFoundException:
                 {
-                    case ChatCommendExecutedResult.Ok:
-                        await args.Message.CreateReactionAsync(DiscordEmoji.FromName(Client, ":white_check_mark:"));
-                        break;
-                    case ChatCommendExecutedResult.InternalError:
-                        await args.Message.CreateReactionAsync(DiscordEmoji.FromName(Client, ":x:"));
-                        break;
-                    case ChatCommendExecutedResult.CannotBeUsedByBot:
-                        await args.Message.CreateReactionAsync(DiscordEmoji.FromName(Client, ":robot:"));
-                        break;
-                    default:
-                        await args.Message.CreateReactionAsync(DiscordEmoji.FromName(Client, ":warning:"));
-                        break;
+                    await e.Context.RespondAsync("Tento příkaz neznám.");
+                    CommandContext? fakeContext = Commands.CreateFakeContext(e.Context.Member, e.Context.Channel,
+                        $"help", e.Context.Prefix,
+                        Commands.FindCommand($"help", out string args), args
+                    );
+                    await Commands.ExecuteCommandAsync(fakeContext);
+                    break;
                 }
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e!.ToString());
-                await args.Message.CreateReactionAsync(DiscordEmoji.FromName(Client, ":no_entry:"));
+                case InvalidOperationException:
+                case ArgumentException:
+                {
+                    await e.Context.RespondAsync("Příkaz jsi zadal špatně.");
+                    CommandContext? fakeContext = Commands.CreateFakeContext(e.Context.Member, e.Context.Channel,
+                        $"help {e.Command?.QualifiedName}", e.Context.Prefix,
+                        Commands.FindCommand($"help {e.Command?.QualifiedName}", out string args), args
+                    );
+                    await Commands.ExecuteCommandAsync(fakeContext);
+                    break;
+                }
+                case ChecksFailedException:
+                {
+                    DiscordEmoji emoji = DiscordEmoji.FromName(e.Context.Client, ":no_entry:");
+
+                    DiscordEmbedBuilder embed = new()
+                    {
+                        Title = "Přístup zakázán",
+                        Description =
+                            $"{emoji} Na vykonání příkazu nemáte dostatečná práva. Pokud si myslíte že ano, kontaktujte svého MODa.",
+                        Color = new DiscordColor(0xFF0000) // red
+                    };
+                    await e.Context.RespondAsync("", embed: embed);
+                    break;
+                }
+                default:
+                    await e.Context.RespondAsync("Něco se pokazilo. Hups. :scream_cat:");
+                    e.Context.Client.Logger.LogError(e.Exception,
+                        "{Username} tried executing '{CommandName}' but it errored: {ExceptionType}: {ExceptionMessage}",
+                        e.Context.User.Username,
+                        e.Command?.QualifiedName ?? "<unknown command>", e.Exception.GetType(),
+                        e.Exception.Message);
+                    break;
             }
         }
 
-        private async Task OnClientOnMessageReactionAdded(MessageReactionAddEventArgs args)
+        private Task Client_MessageReactionAdded(DiscordClient client, MessageReactionAddEventArgs args)
         {
-            // TODO: this is only for verify
-            var emoji = DiscordEmoji.FromName(Client, ":white_check_mark:");
+            return _eventHandler.Handle(args);
+        }
 
-            // https://discordapp.com/channels/366970031445377024/507515506073403402/686745124885364770
-            if (!(args.Message.Id == 686745124885364770 && args.Message.ChannelId == 507515506073403402)) return;
-            if (!args.Emoji.Equals(emoji)) return;
+        private Task Client_MessageReactionRemoved(DiscordClient client, MessageReactionRemoveEventArgs args)
+        {
+            return _eventHandler.Handle(args);
+        }
 
-            _logger.Log(LogLevel.Information, "THIS IS THE RIGHT MESSAGE FOR VERIFY");
+        private Task Client_VoiceStateUpdated(DiscordClient client, VoiceStateUpdateEventArgs args)
+        {
+            return _eventHandler.Handle(args);
+        }
 
-            DiscordUser user = args.User;
-            DiscordDmChannel channel = await Client.CreateDmAsync(user);
+        private Task Client_GuildMemberUpdated(DiscordClient client, GuildMemberUpdateEventArgs args)
+        {
+            return _eventHandler.Handle(args);
+        }
 
-            if (await _authorizationService.IsUserVerified(user.Id))
-            {
-                await channel.SendMessageAsync($"You are already authorized");
-            }
-            else
-            {
-                string link = _urlProvider.GetAuthLink(user.Id);
-                await channel.SendMessageAsync($"Hi, authorize by following this link: {link}");
-            }
+        private Task Client_ChannelCreated(DiscordClient client, ChannelCreateEventArgs args)
+        {
+            return _eventHandler.Handle(args);
         }
     }
 }

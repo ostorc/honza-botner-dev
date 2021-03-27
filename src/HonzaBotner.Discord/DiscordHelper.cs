@@ -31,7 +31,7 @@ namespace HonzaBotner.Discord
         public static async Task<DiscordMessage?> FindMessageFromLink(DiscordGuild guild, string link)
         {
             // Match the channel and message IDs.
-            const string pattern = @"https://discordapp\.com/channels/(?:\d+)/(\d+)/(\d+)/?";
+            const string pattern = @"https://discord(?:app)?\.com/channels/(?:\d+)/(\d+)/(\d+)/?";
             Regex regex = new Regex(pattern);
             Match match = regex.Match(link);
 
@@ -43,7 +43,7 @@ namespace HonzaBotner.Discord
                 bool channelParseSuccess = ulong.TryParse(match.Groups[1].Value, out ulong channelId);
                 if (!channelParseSuccess) return null;
 
-                var channel = guild.GetChannel(channelId);
+                DiscordChannel? channel = guild.GetChannel(channelId);
 
                 if (channel.Type != ChannelType.Text) return null;
 

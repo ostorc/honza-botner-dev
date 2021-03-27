@@ -15,10 +15,15 @@ namespace HonzaBotner.Database
         {
             base.OnModelCreating(builder);
 
-            new CounterMapper().Map(builder.Entity<Counter>());
+            new VerificationMapper().Map(builder.Entity<Verification>());
+            new CountedEmojiMapper().Map(builder.Entity<CountedEmoji>());
+            new RoleBindingMapper().Map(builder.Entity<RoleBinding>());
+            new WarningMapper().Map(builder.Entity<Warning>());
         }
 
-        public DbSet<Counter> Counters { get; set; }
         public DbSet<Verification> Verifications { get; set; }
+        public DbSet<CountedEmoji> CountedEmojis { get; set; }
+        public DbSet<RoleBinding> RoleBindings { get; set; }
+        public DbSet<Warning> Warnings { get; set; }
     }
 }

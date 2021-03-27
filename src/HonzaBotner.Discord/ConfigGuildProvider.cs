@@ -1,6 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+﻿using System;
 using System.Threading.Tasks;
 using DSharpPlus;
 using DSharpPlus.Entities;
@@ -28,18 +26,6 @@ namespace HonzaBotner.Discord
             }
 
             return _client.GetGuildAsync(guildId.Value);
-        }
-
-        public IEnumerable<ulong> GetElevatedRoleIds()
-        {
-            ulong[]? rolesIds = _config.Value.ElevatedRoles;
-
-            if (rolesIds == null)
-            {
-                return Enumerable.Empty<ulong>();
-            }
-
-            return rolesIds;
         }
     }
 }

@@ -1,15 +1,12 @@
-using System;
-using System.Net.Http;
-using System.Security.Claims;
-using System.Text.Json;
-using System.Threading.Tasks;
 using HonzaBotner.Discord.Services.Commands;
-using HonzaBotner.Discord.Services.Commands.Messages;
-using HonzaBotner.Discord.Services.Commands.Pools;
 using HonzaBotner.Database;
 using HonzaBotner.Discord;
+using HonzaBotner.Discord.EventHandler;
+using HonzaBotner.Discord.Managers;
+using HonzaBotner.Discord.Services;
+using HonzaBotner.Discord.Services.EventHandlers;
+using HonzaBotner.Discord.Services.Managers;
 using HonzaBotner.Services;
-using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -38,34 +35,54 @@ namespace HonzaBotner
 
             string connectionString = PsqlConnectionStringParser.GetEFConnectionString(Configuration["DATABASE_URL"]);
 
-            services.AddDbContext<HonzaBotnerDbContext>(options =>
-                options.UseNpgsql(connectionString, b => b.MigrationsAssembly("HonzaBotner")));
+            services
+                .AddDbContext<HonzaBotnerDbContext>(options =>
+                    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("HonzaBotner"))
+                )
 
-            services.AddSwaggerGen(c =>
-            {
-                c.SwaggerDoc("v1", new OpenApiInfo {Title = "HonzaBotner", Version = "v1"});
-            });
+                // Swagger
+                .AddSwaggerGen(c => { c.SwaggerDoc("v1", new OpenApiInfo {Title = "HonzaBotner", Version = "v1"}); })
 
-            services.AddDiscordOptions(Configuration)
-                .AddDiscordBot(config =>
-                {
-                    config.AddCommand<HiCommand>(HiCommand.ChatCommand);
-                    config.AddCommand<AuthorizeCommand>(AuthorizeCommand.ChatCommand);
-                    config.AddCommand<CountCommand>(CountCommand.ChatCommand);
-                    config.AddCommand<Activity>(Activity.ChatCommand);
-                    // Messages
-                    config.AddCommand<SendMessage>(SendMessage.ChatCommand);
-                    config.AddCommand<EditMessage>(EditMessage.ChatCommand);
-                    config.AddCommand<SendImage>(SendImage.ChatCommand);
-                    config.AddCommand<EditImage>(EditImage.ChatCommand);
-                    // Pools
-                    config.AddCommand<YesNo>(YesNo.ChatCommand);
-                    config.AddCommand<Abc>(Abc.ChatCommand);
-                });
-
-            services.AddBotnerServicesOptions(Configuration)
+                // Botner
+                .AddBotnerServicesOptions(Configuration)
                 .AddHttpClient()
-                .AddBotnerServices();
+                .AddBotnerServices()
+
+                // Discord
+                .AddDiscordOptions(Configuration)
+                .AddCommandOptions(Configuration)
+                .AddDiscordBot(config =>
+                    {
+                        //config.RegisterCommands<AuthorizeCommands>();
+                        config.RegisterCommands<BotCommands>();
+                        config.RegisterCommands<ChannelCommands>();
+                        config.RegisterCommands<EmoteCommands>();
+                        config.RegisterCommands<FunCommands>();
+                        config.RegisterCommands<MemberCommands>();
+                        config.RegisterCommands<MessageCommands>();
+                        config.RegisterCommands<PollCommands>();
+                        config.RegisterCommands<TestCommands>();
+                        config.RegisterCommands<VoiceCommands>();
+                        config.RegisterCommands<WarningCommands>();
+                    }, reactions =>
+                    {
+                        reactions
+                            .AddEventHandler<BoosterHandler>()
+                            .AddEventHandler<EmojiCounterHandler>()
+                            .AddEventHandler<HornyJailHandler>()
+                            .AddEventHandler<NewChannelHandler>()
+                            .AddEventHandler<PinHandler>()
+                            .AddEventHandler<RoleBindingsHandler>(EventHandlerPriority.High)
+                            .AddEventHandler<StaffVerificationEventHandler>(EventHandlerPriority.Urgent)
+                            .AddEventHandler<VerificationEventHandler>(EventHandlerPriority.Urgent)
+                            .AddEventHandler<VoiceHandler>()
+                            ;
+                    }
+                )
+
+                // Managers
+                .AddTransient<IVoiceManager, VoiceManager>()
+                ;
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -81,10 +98,24 @@ namespace HonzaBotner
                     c.RoutePrefix = string.Empty;
                 });
             }
+            else
+            {
+                UpdateDatabase(app);
+                app.UseReverseProxyHttpsEnforcer();
+            }
 
             app.UseHttpsRedirection();
             app.UseRouting();
             app.UseEndpoints(endpoints => { endpoints.MapControllers(); });
+        }
+
+        private static void UpdateDatabase(IApplicationBuilder app)
+        {
+            using IServiceScope serviceScope = app.ApplicationServices
+                .GetRequiredService<IServiceScopeFactory>()
+                .CreateScope();
+            using HonzaBotnerDbContext? context = serviceScope.ServiceProvider.GetService<HonzaBotnerDbContext>();
+            context?.Database.Migrate();
         }
     }
 }

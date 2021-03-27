@@ -1,5 +1,9 @@
+using System;
 using DSharpPlus;
-using DSharpPlus.EventArgs;
+using DSharpPlus.CommandsNext;
+using DSharpPlus.Interactivity;
+using DSharpPlus.Interactivity.Enums;
+using DSharpPlus.Interactivity.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -7,28 +11,36 @@ namespace HonzaBotner.Discord
 {
     public class DiscordWrapper
     {
-        private readonly ILogger<DiscordClient> _discordLogger;
-
         public DiscordClient Client { get; }
+        public CommandsNextExtension Commands { get; }
+        public InteractivityExtension Interactivity { get; }
 
-        public DiscordWrapper(IOptions<DiscordConfig> options, ILogger<DiscordClient> discordLogger)
+        public DiscordWrapper(IOptions<DiscordConfig> options, IServiceProvider services, ILoggerFactory loggerFactory)
         {
-            _discordLogger = discordLogger;
-
-            var config = new DiscordConfiguration()
+            DiscordConfig optionsConfig = options.Value;
+            DiscordConfiguration config = new()
             {
-                Token = options.Value.Token,
-                TokenType = TokenType.Bot
+                LoggerFactory = loggerFactory,
+                Token = optionsConfig.Token,
+                TokenType = TokenType.Bot,
+                Intents = DiscordIntents.All
             };
 
             Client = new DiscordClient(config);
-            Client.DebugLogger.LogMessageReceived += HandleLog;
-        }
 
-        private void HandleLog(object? sender, DebugLogMessageEventArgs args)
-        {
-            var level = args.Level.ToLoggingLevel();
-            _discordLogger.Log(level, $"[{args.Application}]: {args.Message}");
+            CommandsNextConfiguration cConfig = new()
+            {
+                Services = services, StringPrefixes = optionsConfig.Prefixes, EnableDms = true
+            };
+            Commands = Client.UseCommandsNext(cConfig);
+
+            InteractivityConfiguration iConfig = new()
+            {
+                PollBehaviour = PollBehaviour.KeepEmojis, Timeout = TimeSpan.FromSeconds(30)
+            };
+            Interactivity = Client.UseInteractivity(iConfig);
+
+            Client.Logger.LogInformation("Starting with secret: {Token}", options.Value.Token);
         }
     }
 }
